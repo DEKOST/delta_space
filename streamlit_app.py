@@ -22,4 +22,4 @@ with open("templates/index.html", "r", encoding="utf-8") as f:
     html_content = f.read()
 
 # Display the game in fullscreen mode
-html(html_content, width=None, height=1000, scrolling=False)
+html(html_content, width=None, height=None, scrolling=False)
