@@ -68,15 +68,55 @@
         let fuelCans = [];
         let items = [];
         let weaponLevel = 1;
+        let boss = null;
         const WEAPON_TYPES = {
-            1: { fireRate: 500, damage: 1 },
-            2: { fireRate: 300, damage: 2 },
-            3: { fireRate: 150, damage: 3, spread: 0.1 },
-            4: { fireRate: 120, damage: 4, spread: 0.3 },
-            5: { fireRate: 100, damage: 5, spread: 0.6 },
-            6: { fireRate: 90, damage: 6, spread: 0.9 }
+            1: { fireRate: 500, damage: 1, name: 'Пушка', color: '#fff' },
+            2: { fireRate: 400, damage: 2, name: 'Дуал', color: '#2ecc71' },
+            3: { fireRate: 300, damage: 3, spread: 0.1, name: 'Дробовик', color: '#e67e22' },
+            4: { fireRate: 150, damage: 4, homing: true, name: 'Самонаводящиеся', color: '#9b59b6' },
+            5: { fireRate: 100, damage: 5, bounce: 3, name: 'Рикошет', color: '#3498db' },
+            6: { fireRate: 200, damage: 6, piercing: true, name: 'Пробивные', color: '#e74c3c' },
+            7: { fireRate: 50, damage: 7, laser: true, name: 'Лазер', color: '#f1c40f' },
+            8: { fireRate: 500, damage: 10, aoe: 50, name: 'Ракеты', color: '#1abc9c' },
+            9: { fireRate: 1000, damage: 15, chain: 5, name: 'Молнии', color: '#e91e63' },
+            10: { fireRate: 10, damage: 2, infinite: true, name: 'ПЛАЗМА', color: '#8e44ad' }
         };
         let lastShot = 0;
+
+        const ABILITIES = {
+            1: { 
+                name: 'Щит', 
+                cooldown: 10000,
+                effect: () => player.shield = 500 
+            },
+            2: {
+                name: 'Телепорт',
+                cooldown: 5000,
+                effect: () => {
+                    player.x = Math.random() * canvas.width;
+                    player.y = Math.random() * canvas.height;
+                }
+            }
+        };
+
+        const SHIP_MODS = {
+            engine: { 
+                level: 1,
+                upgrades: [
+                    { speed: 6, acceleration: 0.2 },
+                    { speed: 7, acceleration: 0.3 },
+                    { speed: 8, acceleration: 0.4 }
+                ]
+            },
+            hull: {
+                level: 1,
+                upgrades: [
+                    { armor: 1 },
+                    { armor: 1.5 },
+                    { armor: 2 }
+                ]
+            }
+        };
 
         // Инициализация игры
         function init() {
@@ -89,8 +129,21 @@
             gameLoop();
             
             // Обработчики событий
-            window.addEventListener('keydown', e => keys[e.key] = true);
-            window.addEventListener('keyup', e => keys[e.key] = false);
+            window.addEventListener('keydown', e => {
+                keys[e.key] = true;
+                
+                if(e.key >=1 && e.key <=9 && e.shiftKey) {
+                    const ability = ABILITIES[e.key];
+                    if(ability && !ability.onCooldown) {
+                        ability.effect();
+                        ability.onCooldown = true;
+                        setTimeout(() => ability.onCooldown = false, ability.cooldown);
+                    }
+                }
+            });
+            window.addEventListener('keyup', e => {
+                keys[e.key] = false;
+            });
         }
 
         // Создание астероида
@@ -126,7 +179,9 @@
                     canvas.width/2 - x + Math.random()*100 -50
                 ),
                 speed: Math.random() * 2 + 1,
-                rotation: (Math.random() - 0.5) * 0.02
+                rotation: (Math.random() - 0.5) * 0.02,
+                health: Math.floor(Math.random() * 10) + 5, // 5-15 HP
+                maxHealth: 15
             };
         }
 
@@ -149,7 +204,7 @@
             
             // Управление кораблём
             if(keys['ArrowUp'] && player.fuel > 0) {
-                player.speed += player.acceleration;
+                player.speed = Math.min(player.speed + player.acceleration, player.maxSpeed);
                 player.fuel = Math.max(0, player.fuel - 0.1);
                 generateExhaust();
             }
@@ -186,6 +241,40 @@
             
             // Обновление пуль
             bullets = bullets.filter(bullet => {
+                // Лазерная механика
+                if(bullet.life) {
+                    bullet.life--;
+                    return bullet.life > 0;
+                }
+                
+                // Рикошет
+                if(bullet.bounce > 0) {
+                    if(bullet.x < 0 || bullet.x > canvas.width) {
+                        bullet.angle = Math.PI - bullet.angle;
+                        bullet.bounce--;
+                    }
+                    if(bullet.y < 0 || bullet.y > canvas.height) {
+                        bullet.angle = -bullet.angle;
+                        bullet.bounce--;
+                    }
+                }
+                
+                // Самонаведение
+                if(bullet.homing) {
+                    const nearest = asteroids.reduce((prev, curr) => {
+                        const dist = Math.hypot(bullet.x - curr.x, bullet.y - curr.y);
+                        return dist < prev.dist ? { ast: curr, dist } : prev;
+                    }, { dist: Infinity });
+                    
+                    if(nearest.ast) {
+                        const targetAngle = Math.atan2(
+                            nearest.ast.y - bullet.y,
+                            nearest.ast.x - bullet.x
+                        );
+                        bullet.angle += (targetAngle - bullet.angle) * 0.1;
+                    }
+                }
+                
                 bullet.x += Math.cos(bullet.angle) * 10;
                 bullet.y += Math.sin(bullet.angle) * 10;
                 
@@ -196,17 +285,31 @@
 
             // Проверка столкновений пуль с астероидами
             asteroids = asteroids.filter(ast => {
-                const hit = bullets.some(bullet => {
+                let asteroidDestroyed = false;
+                
+                bullets = bullets.filter(bullet => {
                     const dx = bullet.x - ast.x;
                     const dy = bullet.y - ast.y;
-                    return Math.sqrt(dx*dx + dy*dy) < ast.radius;
+                    const distance = Math.sqrt(dx*dx + dy*dy);
+                    
+                    if(distance < ast.radius) {
+                        ast.health -= bullet.damage || 1;
+                        
+                        // Удаляем пулю если не пробивная
+                        if(!bullet.piercing) {
+                            return false; // удаляем пулю
+                        }
+                        
+                        if(ast.health <= 0) {
+                            asteroidDestroyed = true;
+                            player.score += 100;
+                            createExplosion(ast.x, ast.y, ast.radius);
+                        }
+                    }
+                    return true; // сохраняем пулю
                 });
                 
-                if(hit) {
-                    player.score += 100;
-                    createExplosion(ast.x, ast.y, ast.radius);
-                }
-                return !hit;
+                return !asteroidDestroyed && ast.health > 0;
             });
             
             // Генерация топлива
@@ -252,7 +355,7 @@
                     if(item.type === 'fuel') {
                         player.fuel = Math.min(100, player.fuel + 30);
                     } else {
-                        weaponLevel = Math.min(6, weaponLevel + 1);
+                        weaponLevel = Math.min(10, weaponLevel + 1);
                     }
                     return false;
                 }
@@ -279,13 +382,13 @@
             // Обновление интерфейса
             document.getElementById('fuel').textContent = Math.floor(player.fuel);
             document.getElementById('score').textContent = player.score;
+
+            spawnBoss();
         }
 
         // Отрисовка
         function render() {
-            // Очистка экрана
-            ctx.fillStyle = '#000';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            renderBackground();
             
             // Отрисовка астероидов
             asteroids.forEach(ast => {
@@ -293,11 +396,29 @@
                 ctx.translate(ast.x, ast.y);
                 ctx.rotate(ast.angle);
                 
+                // Отрисовка астероида
                 ctx.strokeStyle = '#666';
                 ctx.lineWidth = 2;
                 ctx.beginPath();
                 ctx.arc(0, 0, ast.radius, 0, Math.PI*2);
                 ctx.stroke();
+                
+                // Полоса здоровья (исправлено)
+                const healthPercent = (ast.health / ast.maxHealth) * 100;
+                ctx.fillStyle = '#e74c3c';
+                ctx.fillRect(
+                    -ast.radius, 
+                    -ast.radius - 20, // смещение относительно центра
+                    ast.radius*2, 
+                    5
+                );
+                ctx.fillStyle = '#2ecc71';
+                ctx.fillRect(
+                    -ast.radius, 
+                    -ast.radius - 20,
+                    (ast.radius*2) * (healthPercent/100), 
+                    5
+                );
                 
                 ctx.restore();
             });
@@ -328,7 +449,7 @@
             
             // Пули
             bullets.forEach(bullet => {
-                ctx.fillStyle = '#ff3300';
+                ctx.fillStyle = WEAPON_TYPES[weaponLevel].color;
                 ctx.beginPath();
                 ctx.arc(bullet.x, bullet.y, 3, 0, Math.PI*2);
                 ctx.fill();
@@ -348,6 +469,24 @@
             ctx.fillText(`Оружие: ${weaponLevel} ур.`, 10, 60);
         }
 
+        function renderBackground() {
+            // Звездное небо
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Туманности
+            ctx.fillStyle = 'rgba(46, 204, 113, 0.05)';
+            ctx.beginPath();
+            ctx.arc(canvas.width*0.3, canvas.height*0.7, 300, 0, Math.PI*2);
+            ctx.fill();
+            
+            // Планеты
+            ctx.fillStyle = '#34495e';
+            ctx.beginPath();
+            ctx.arc(canvas.width*1.2, canvas.height*0.5, 150, 0, Math.PI*2);
+            ctx.fill();
+        }
+
         // Генерация выхлопа
         function generateExhaust() {
             for(let i = 0; i < 3; i++) {
@@ -363,15 +502,34 @@
 
         // Новая функция стрельбы
         function shoot() {
-            const spread = WEAPON_TYPES[weaponLevel].spread || 0;
-            const count = weaponLevel === 3 ? 3 : 1;
+            const weapon = WEAPON_TYPES[weaponLevel];
+            if(!weapon) return;
             
-            for(let i = 0; i < count; i++) {
+            if(weapon.laser) {
                 bullets.push({
                     x: player.x + Math.cos(player.angle) * 20,
                     y: player.y + Math.sin(player.angle) * 20,
-                    angle: player.angle + (Math.random() - 0.5) * spread
+                    angle: player.angle,
+                    life: 100
                 });
+                return;
+            }
+
+            const count = weapon.bounce ? 3 : weapon.chain ? 1 : weaponLevel === 3 ? 3 : 1;
+            
+            for(let i = 0; i < count; i++) {
+                const bullet = {
+                    x: player.x + Math.cos(player.angle) * 20,
+                    y: player.y + Math.sin(player.angle) * 20,
+                    angle: player.angle + (Math.random() - 0.5) * (weapon.spread || 0),
+                    bounce: weapon.bounce || 0,
+                    piercing: weapon.piercing || false,
+                    homing: weapon.homing || false,
+                    chain: weapon.chain || 0
+                };
+                
+                if(weapon.aoe) bullet.aoe = weapon.aoe;
+                bullets.push(bullet);
             }
         }
 
@@ -392,6 +550,23 @@
         function gameOver() {
             player.alive = false;
             document.getElementById('gameOver').style.display = 'block';
+        }
+
+        function spawnBoss() {
+            if(player.score % 5000 === 0) {
+                boss = {
+                    x: canvas.width/2,
+                    y: -200,
+                    health: 100 * (player.score/5000),
+                    pattern: 0,
+                    attackTimer: 0
+                };
+            }
+        }
+
+        function applyUpgrades() {
+            player.maxSpeed = SHIP_MODS.engine.upgrades[SHIP_MODS.engine.level-1].speed;
+            player.acceleration = SHIP_MODS.engine.upgrades[SHIP_MODS.engine.level-1].acceleration;
         }
 
         // Запуск игры
